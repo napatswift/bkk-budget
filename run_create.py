@@ -3,6 +3,9 @@ import pandas as pd
 import re
 from tqdm import tqdm
 import fitz
+import json
+
+VERSION = '0.1'
 
 
 def fix_pdf_text(old_text):
@@ -121,19 +124,15 @@ def main(args):
 
     for pdf_name, pdf_df in bb[~bb.line_label.isna()].groupby(['pdf',]): 
         doc = fitz.open(pdf_name)
-    #     if pdf_name in except_pdf:
-    #         prog_bar.update(len(pdf_df))
-    #         continue
 
         for pdf_page_index, page_df in pdf_df.groupby(['pagenum']):
             prog_bar.desc = f'{pdf_name}:{pdf_page_index}:{len(page_df)}'
             prog_bar.update(1)
 
-            page = doc.load_page(pdf_page_index)
-
-            if [x for x in page.get_drawings() if x['rect'].height > 10]:
-                prog_bar.update(len(pdf_df[pdf_df.pagenum > pdf_page_index].groupby(['pagenum'])))
-                break
+            # page = doc.load_page(pdf_page_index)
+            # if [x for x in page.get_drawings() if x['rect'].height > 10]:
+            #     prog_bar.update(len(pdf_df[pdf_df.pagenum > pdf_page_index].groupby(['pagenum'])))
+            #     break
 
             bb_with_entry.loc[page_df.index, 'is_included'] = True
                 
@@ -171,7 +170,106 @@ def main(args):
                 is_last_token_baht = text_line[-1] == 'บาท'
                 if is_last_token_baht:
                     is_entry = False
+    
+    bb_with_entry.to_csv('bkk-budget-with-entry.csv', index=False)
+    
+    # create indexer #
+    entry_bullet_table = bb_with_entry.groupby('entry_label').apply(lambda x: x.bullet_label.unique()[0])
+    entry_page_num_table = bb_with_entry.groupby('entry_label').apply(lambda x: x.pagenum.unique()[0])
+    entry_text_table = bb_with_entry.groupby(
+        'entry_label').apply(lambda x: ' '.join(x.sort_values(['line_label','x0']).fix_text.values))
 
+    budget_resource = json.load(open('budget_resource.json'))
+    document_index = {
+        pdf['path']: re.sub('^[^\s]* ', '',pdf['name'])
+        for year in budget_resource
+        for pdf in budget_resource[year]['pdf_path']
+    }
+    document_url_index = {
+        pdf['path']: pdf['url']
+        for year in budget_resource
+        for pdf in budget_resource[year]['pdf_path']
+    }
+
+    child_parent_table = dict()
+    curr = None
+    prev_pdf_name = None
+    for entry, bullet in entry_bullet_table.items():
+        pdf_name = bb_with_entry[bb_with_entry.entry_label == entry].pdf.iloc[0]
+        if prev_pdf_name != pdf_name:
+            curr = None
+        prev_pdf_name = pdf_name
+        while (curr is not None and bullet <= entry_bullet_table[curr]):
+            curr = child_parent_table[curr]
+        child_parent_table[entry] = curr
+        curr = entry
+    
+    doc_count = {}
+    for doc_name in document_index.values():
+        doc_name = re.sub('\s','',doc_name)
+        doc_count[doc_name] = doc_count.get(doc_name, 0) + 1
+    doc_names = [k for k, v in doc_count.items() if v > 3]
+
+    doc_org_name = {}
+    for pdf, pdf_df in bb_with_entry[(bb_with_entry.pagenum == 0)].groupby(['pdf',]):
+        for l, line_df in pdf_df.groupby(['line_label']):
+            line_text = line_df.fix_text.values.tolist()[0]
+            if re.findall('[\u0E00-\u0E7F]+', line_text):
+                print(pdf, line_text)
+                doc_org_name[pdf] = line_text
+                break
+    
+    rows = []
+    for c, p in child_parent_table.items():
+        is_leaf = c not in child_parent_table.values()
+        if not is_leaf: continue
+
+        curr_p = p
+        ancesters = []
+        while curr_p is not None:
+            ancesters.append(curr_p)
+            curr_p = child_parent_table[curr_p]
+
+        ancesters = ancesters[::-1]
+        
+        pdf_name = bb_with_entry[bb_with_entry.entry_label == c].pdf.iloc[0]
+        org = doc_org_name.get(pdf_name)
+        ancesters.append(c)
+        entries = [entry_text_table.loc[a] for a in ancesters]
+
+        temp_row = dict()
+        for i, entry in enumerate(entries):
+            
+            entry = entry.replace('- 6', '-6')
+            amount = re.findall('([\d,]+) ?บาท', entry)
+            entry = re.sub('[\d,]+ ?บาท', '', entry)
+            bullet = re.findall('^[\d\.\-–]+',entry)
+            entry = re.sub('^[\d\.\-–]+', '',entry).strip()
+            entry = re.sub('^([\d\.]+|[\u0E00-\u0E7F]\.) ?', '',entry)
+    #         entry = re.sub('[\d\u0E00-\u0E7F\.]+', '',entry)
+            entry = entry.strip()
+
+            if i == len(entries) - 1:
+                if bullet:
+                    temp_row['output/proj'] = bullet[0]
+                temp_row['output_proj_name'] = entry
+                if amount:
+                    temp_row['amount'] = amount[0]
+            else:
+                if bullet:
+                    temp_row[f'bullet_{i}'] = bullet[0]
+                temp_row[f'name_{i}'] = entry
+                if amount:
+                    temp_row[f'amount_{i}'] = amount[0]
+
+        row = {'name_organization': org, 'pdf_name': pdf_name}
+        row.update(temp_row)
+        rows.append(row)
+
+    bkk_budget = pd.DataFrame(rows)
+    bkk_budget = bkk_budget.assign(pdf_link=bkk_budget.pdf_name.apply(lambda name: document_url_index[name[4:]]))
+    bkk_budget_proj = bkk_budget[bkk_budget['output/proj'].apply(lambda bullet: len(str(bullet)) > 7)]
+    bkk_budget_proj.to_csv(f'bkkbudget_61-64_v{VERSION}.csv')
 
 
 if __name__ == '__main__':
