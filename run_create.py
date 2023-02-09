@@ -2,7 +2,7 @@ import argparse
 import pandas as pd
 import re
 from tqdm import tqdm
-import fitz
+# import fitz
 import json
 
 VERSION = '0.1'
@@ -20,7 +20,7 @@ def fix_pdf_text(old_text):
     return new_text
 
 
-def get_patern_of_bullet(String):
+def get_patern_of_bullet(in_string):
     regx = [
         ('^0[\-–\d]+$', 70),
         ('^\(\d*(\.?\d*)*\)$', 50),
@@ -33,7 +33,7 @@ def get_patern_of_bullet(String):
         ('^[\u0E00-\u0E7F]\.$', 1)
     ]
     
-    if String in ['ด้านการจัดบริการของสำนักงานเขต',
+    if in_string in ['ด้านการจัดบริการของสำนักงานเขต',
                   'ด้านการบริหารจัดการและบริหารราชการกรุงเทพมหานคร',
                   'ด้านการศึกษา',
                   'ด้านความปลอดภัยและความเป็นระเบียบเรียบร้อย',
@@ -48,10 +48,10 @@ def get_patern_of_bullet(String):
                   'ด้านเศรษฐกิจและการพาณิชย์']: return ('ด้าน',1)
 
     for r, l in regx:
-        if re.match(r, String):
+        if re.match(r, in_string):
             if l in [5, 20, 50]:
-                l = String.count('.') + l
-            if r == '^งาน' and String == 'งานที่จะทำ': continue
+                l = in_string.count('.') + l
+            if r == '^งาน' and in_string == 'งานที่จะทำ': continue
             return r, l
     return '', 0
 
@@ -123,7 +123,7 @@ def main(args):
     prog_bar = tqdm(total=len(bb[~bb.line_label.isna()].groupby(['pdf', 'pagenum'])))
 
     for pdf_name, pdf_df in bb[~bb.line_label.isna()].groupby(['pdf',]): 
-        doc = fitz.open(pdf_name)
+        # doc = fitz.open(pdf_name)
 
         for pdf_page_index, page_df in pdf_df.groupby(['pagenum']):
             prog_bar.desc = f'{pdf_name}:{pdf_page_index}:{len(page_df)}'
